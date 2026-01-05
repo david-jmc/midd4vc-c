@@ -1,7 +1,9 @@
 #ifndef JOB_CATALOG_H
 #define JOB_CATALOG_H
 
-typedef int (*job_fn_t)(int a, int b);
+#include <stddef.h>
+
+typedef int (*job_fn_t)(const int *args, size_t argc);
 
 typedef struct {
     const char *service;
@@ -10,12 +12,11 @@ typedef struct {
 } job_entry_t;
 
 /* funções concretas */
-int job_add(int a, int b);
-int job_mul(int a, int b);
+int job_add(const int *args, size_t argc);
+int job_mul(const int *args, size_t argc);
+int job_fibonacci(const int *args, size_t argc);
 
 /* lookup por service + function */
-job_fn_t job_catalog_lookup(
-    const char *service,
-    const char *function);
+job_fn_t job_catalog_lookup(const char *service, const char *function);
 
 #endif

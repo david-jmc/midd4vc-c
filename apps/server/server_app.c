@@ -13,7 +13,7 @@
 #define MAX_JOBS     512
 #define JOB_TIMEOUT  5  
 #define MAX_RETRIES  3
-#define VEHICLE_TIMEOUT 15 
+#define VEHICLE_TIMEOUT 60 
 #define MAX_LOAD 5         
 
 /* --- Estruturas --- */
@@ -79,7 +79,7 @@ static vehicle_t* strategy_least_loaded(double lat, double lon) {
     return best;
 }
 
-static balancing_strategy_fn current_policy = strategy_proximity;
+static balancing_strategy_fn current_policy = strategy_round_robin;
 
 /* --- Helpers --- */
 
@@ -214,9 +214,47 @@ static void on_config_policy(midd4vc_client_t *c, const char *topic, const char 
     printf("[SERVER] Policy Updated\n");
 }
 
+static void on_vehicle_status_change(midd4vc_client_t *c, const char *topic, const char *payload) {
+    char v_id[64];
+    sscanf(topic, "vc/vehicle/%63[^/]/status", v_id);
+
+    vehicle_t *v = get_vehicle(v_id);
+    if (v && strstr(payload, "offline_lwt")) {
+        v->is_active = 0;
+        printf("[SERVER] LWT DETECTADO: Veículo %s desconectou abruptamente!\n", v_id);
+    } else if (v && strstr(payload, "online")) {
+        v->is_active = 1;
+        printf("[SERVER] Veículo %s está Online via LWT\n", v_id);
+    }
+}
+
+static void maintenance_loop(midd4vc_client_t *c) {
+    time_t now = time(NULL);
+    
+    for (int i = 0; i < MAX_JOBS; i++) {
+        job_ctx_t *j = &jobs[i];
+        if (j->in_use && !j->completed && j->assigned && (now - j->sent_at >= JOB_TIMEOUT)) {
+            vehicle_t *v = get_vehicle(j->assigned_vehicle);
+            if (v && v->active_jobs > 0) v->active_jobs--;
+            
+            if (j->retries < MAX_RETRIES) {
+                j->retries++; 
+                j->assigned = 0;
+                printf("[SERVER] Retry %d for Job %s\n", j->retries, j->job_id);
+                assign_job(c, j);
+            } else {
+                j->completed = 1;
+                printf("[SERVER] Job %s FAILED\n", j->job_id);
+            }
+        }
+    }
+}
+
+/*
 static void maintenance_loop(midd4vc_client_t *c) {
     time_t now = time(NULL);
     for (int i = 0; i < vehicle_count; i++) {
+        printf("DEBUG: Node %s last seen %ld seconds ago\n", vehicles[i].vehicle_id, now - vehicles[i].last_seen);
         if (vehicles[i].is_active && (now - vehicles[i].last_seen > VEHICLE_TIMEOUT)) {
             vehicles[i].is_active = 0;
             printf("[SERVER] Vehicle %s OFFLINE (Mobility)\n", vehicles[i].vehicle_id);
@@ -239,6 +277,7 @@ static void maintenance_loop(midd4vc_client_t *c) {
         }
     }
 }
+*/
 
 int main(void) {
     midd4vc_client_t *srv = midd4vc_create("server_cloud_ctrl", ROLE_DASHBOARD);
@@ -248,6 +287,7 @@ int main(void) {
     midd4vc_subscribe(srv, "vc/client/+/job/submit", on_job_submit);
     midd4vc_subscribe(srv, TOPIC_SERVER_JOB_RESULT, on_job_result);
     midd4vc_subscribe(srv, "vc/server/config/policy", on_config_policy);
+    midd4vc_subscribe(srv, "vc/vehicle/+/status", on_vehicle_status_change);
 
     printf("[SERVER] Cloud Orchestrator Ready\n");
 

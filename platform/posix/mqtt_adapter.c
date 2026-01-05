@@ -6,7 +6,7 @@
 
 #define ADDRESS     "tcp://localhost:1883"
 #define QOS         0
-#define TIMEOUT     10000L
+#define TIMEOUT     100L
 #define MAX_SUBS    50
 
 // Estrutura para gerir múltiplas subscrições no adaptador
@@ -60,6 +60,26 @@ void mqtt_init(const char *client_id) {
     MQTTClient_setCallbacks(client, NULL, NULL, msg_arrived, NULL);
 }
 
+int mqtt_connect(const char *host, int port, const char *lwt_topic, const char *lwt_message) {
+    MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
+    MQTTClient_willOptions will_opts = MQTTClient_willOptions_initializer;
+
+    if (lwt_topic && lwt_message) {
+        will_opts.topicName = lwt_topic;
+        will_opts.message = lwt_message;
+        will_opts.retained = 1; // Importante para o servidor saber mesmo se o evento passou
+        will_opts.qos = 1;
+        conn_opts.will = &will_opts;
+    }
+
+    conn_opts.keepAliveInterval = 10;
+    conn_opts.cleansession = 1;
+    if (MQTTClient_connect(client, &conn_opts) != MQTTCLIENT_SUCCESS) {
+        printf("[MQTT] Failure to connect\n");
+    }
+}
+
+/** 
 void mqtt_connect(const char *host, int port) {
     MQTTClient_connectOptions opts = MQTTClient_connectOptions_initializer;
     opts.keepAliveInterval = 20;
@@ -68,6 +88,7 @@ void mqtt_connect(const char *host, int port) {
         printf("[MQTT] Failure to connect\n");
     }
 }
+*/
 
 void mqtt_subscribe(const char *topic, mqtt_msg_cb_t cb, void *userdata) {
     // Adiciona à tabela de subscrições interna
@@ -97,6 +118,7 @@ void mqtt_publish(const char *topic, const char *payload) {
     msg.qos = QOS;
     msg.retained = 0;
     MQTTClient_deliveryToken token;
+    
     MQTTClient_publishMessage(client, topic, &msg, &token);
     MQTTClient_waitForCompletion(client, token, TIMEOUT);
 }

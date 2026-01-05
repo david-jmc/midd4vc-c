@@ -8,7 +8,8 @@ typedef void (*mqtt_msg_cb_t)(
 );
 
 void mqtt_init(const char *client_id);
-void mqtt_connect(const char *host, int port);
+int mqtt_connect(const char *host, int port, const char *lwt_topic, const char *lwt_message);
+//void mqtt_connect(const char *host, int port);
 void mqtt_disconnect(void);
 
 void mqtt_subscribe(

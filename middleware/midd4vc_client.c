@@ -113,6 +113,53 @@ void midd4vc_set_job_result_handler(midd4vc_client_t *c, midd4vc_job_result_cb_t
 void midd4vc_start(midd4vc_client_t *c) {
     if (!c) return;
 
+    char lwt_topic[128] = {0};
+    char *lwt_payload = "{\"status\":\"offline_lwt\"}";
+    
+    mqtt_init(c->client_id);
+
+    // Se for um nó de infraestrutura/veículo, configuramos o LWT
+    if (c->role == ROLE_VEHICLE || c->role == ROLE_RSU) {
+        // Tópico onde o servidor monitora a vida do nó
+        snprintf(lwt_topic, sizeof(lwt_topic), "vc/vehicle/%s/status", c->client_id);
+        
+        // Conecta passando as informações do Testamento
+        // Assumindo que seu mqtt_adapter agora aceita LWT
+        mqtt_connect("localhost", 1883, lwt_topic, lwt_payload);
+        
+        // Inscrição para Jobs
+        char job_topic[128];
+        snprintf(job_topic, sizeof(job_topic), TOPIC_JOB_ASSIGN, c->client_id);
+        mqtt_subscribe(job_topic, mqtt_message_router, c);
+        
+        // Publica que está ONLINE imediatamente após conectar
+        midd4vc_publish(c, lwt_topic, "{\"status\":\"online\"}");
+        
+        // Registro formal de metadados
+        midd4vc_register(c, "{\"status\":\"active\"}");
+    } else {
+        // Clientes e Dashboard conectam sem LWT (ou LWT genérico)
+        mqtt_connect("localhost", 1883, NULL, NULL);
+    }
+
+    // Configurações específicas de Cliente
+    if (c->role == ROLE_CLIENT) {
+        char res_topic[128];
+        snprintf(res_topic, sizeof(res_topic), TOPIC_JOB_RESULT, c->client_id);
+        mqtt_subscribe(res_topic, mqtt_message_router, c);
+    }
+
+    // Todos ouvem eventos globais
+    mqtt_subscribe("vc/event/#", mqtt_message_router, c);
+
+    c->state = MIDD4VC_RUNNING;
+    printf("[Midd4VC] Cliente '%s' iniciado (Role: %d) com LWT ativado\n", c->client_id, c->role);
+}
+
+/*
+void midd4vc_start(midd4vc_client_t *c) {
+    if (!c) return;
+
     mqtt_init(c->client_id);
     mqtt_connect("localhost", 1883);
 
@@ -122,6 +169,9 @@ void midd4vc_start(midd4vc_client_t *c) {
     if (c->role == ROLE_VEHICLE || c->role == ROLE_RSU) {
         snprintf(topic, sizeof(topic), TOPIC_JOB_ASSIGN, c->client_id);
         mqtt_subscribe(topic, mqtt_message_router, c);
+        
+        // new
+        midd4vc_register(c, "{\"status\":\"online\"}");
     }
 
     // SE FOR UM CLIENTE: Ouve os resultados vindos da nuvem (CORREÇÃO CRÍTICA)
@@ -143,6 +193,7 @@ void midd4vc_stop(midd4vc_client_t *c) {
         c->state = MIDD4VC_STOPPED;
     }
 }
+    */
 
 /* ---------- Operações de Mensagens ---------- */
 

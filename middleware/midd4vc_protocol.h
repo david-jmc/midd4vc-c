@@ -9,7 +9,7 @@ typedef struct {
     char job_id[64];
     char service[64];
     char function[64];
-    int args[8];
+    int args[16];
     size_t argc;
     char client_id[64];
 } midd4vc_job_t;

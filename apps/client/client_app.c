@@ -4,38 +4,33 @@
 #include <unistd.h>
 #include <time.h>
 
-// Callback de Resultado: Transparente
 void on_result_received(const char* job_id, midd4vc_job_status_t status, int result) {
     if (status == JOB_DONE) {
-        printf("[APP-CLIENT] Job %s FINALIZADO! Resultado: %d\n", job_id, result);
-    } else {
-        printf("[APP-CLIENT] Job %s FALHOU.\n", job_id);
+        printf("[CLIENT] Resposta do Job %s: Fibonacci = %d\n", job_id, result);
     }
 }
 
 int main(int argc, char *argv[]) {
-    char *id = (argc > 1) ? argv[1] : "user_1";
-    srand(time(NULL));
+    char *id = (argc > 1) ? argv[1] : "client_default";
+    srand(time(NULL) + getpid());
 
     midd4vc_client_t *client = midd4vc_create(id, ROLE_CLIENT);
     midd4vc_set_job_result_handler(client, on_result_received);
     midd4vc_start(client);
 
-    printf("[CLIENT %s] Conectado à Cloud...\n", id);
-
     while (1) {
-        int vals[] = {rand() % 50, rand() % 50};
+        // Gera um número aleatório entre 5 e 25 para calcular Fibonacci
+        int n_fib = (rand() % 21) + 5; 
+        int vals[] = { n_fib };
         char jid[32];
-        snprintf(jid, sizeof(jid), "job_%d", rand() % 1000);
+        snprintf(jid, sizeof(jid), "fib_%d_%d", getpid(), rand() % 100);
 
-        double my_lat = 41.1234;
-        double my_lon = -8.5678;
-
-        printf("[APP-CLIENT] Solicitando: %d + %d (ID: %s)\n", vals[0], vals[1], jid);
+        printf("[%s] Solicitando Fibonacci de %d...\n", id, n_fib);
         
-        midd4vc_submit_job(client, jid, "math", "sum", my_lat, my_lon, vals, 2);
+        // Submete job para o serviço "math" função "fib" (conforme seu catálogo)
+        midd4vc_submit_job(client, jid, "math", "fib", 0.0, 0.0, vals, 1);
 
-        sleep(7); // Nova requisição a cada 7 segundos
+        sleep(rand() % 4 + 3); // Intervalo entre 3 e 7 segundos
     }
     return 0;
 }

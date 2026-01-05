@@ -23,37 +23,50 @@ static int get_json_string(const char *json, const char *key, char *dest, size_t
 }
 
 /* Helper para extrair o array de argumentos [arg1, arg2] */
-static int get_json_args(const char *json, int *arg1, int *arg2) {
+static int get_json_args(const char *json, int *args, size_t *argc) {
     char *start = strstr(json, "\"args\":[");
     if (!start) return 0;
-    start += 8; // Pula "args":[
     
-    if (sscanf(start, "%d,%d", arg1, arg2) == 2) return 1;
-    return 0;
+    start += 8; // Pula "args":[
+    *argc = 0;
+    char *current = start;
+
+    // Loop que extrai números até encontrar o fim do array ']' ou atingir o limite do protocolo (16)
+    while (*current != ']' && *current != '\0' && *argc < 16) {
+        // Pula caracteres que não são números (vírgulas, espaços, etc)
+        while (*current && (*current < '0' || *current > '9') && *current != '-' && *current != ']') {
+            current++;
+        }
+        
+        if (*current == ']' || *current == '\0') break;
+
+        // Converte e armazena
+        args[*argc] = atoi(current);
+        (*argc)++;
+
+        // Avança o ponteiro para o próximo separador
+        while (*current && *current != ',' && *current != ']') {
+            current++;
+        }
+    }
+    return (*argc > 0);
 }
 
 int midd4vc_parse_job(const char *json, midd4vc_job_t *job) {
     if (!json || !job) return 0;
 
-    // Inicializa a estrutura para evitar lixo
     memset(job, 0, sizeof(midd4vc_job_t));
 
-    int success = 1;
-
-    // Busca os campos de forma independente da ordem no JSON
-    success &= get_json_string(json, "job_id", job->job_id, sizeof(job->job_id));
-    success &= get_json_string(json, "service", job->service, sizeof(job->service));
-    success &= get_json_string(json, "function", job->function, sizeof(job->function));
-    success &= get_json_string(json, "client_id", job->client_id, sizeof(job->client_id));
+    // Campos de texto (Independentes e robustos)
+    get_json_string(json, "job_id", job->job_id, sizeof(job->job_id));
+    get_json_string(json, "service", job->service, sizeof(job->service));
+    get_json_string(json, "function", job->function, sizeof(job->function));
+    get_json_string(json, "client_id", job->client_id, sizeof(job->client_id));
     
-    int a, b;
-    if (get_json_args(json, &a, &b)) {
-        job->args[0] = a;
-        job->args[1] = b;
-        job->argc = 2;
-    } else {
-        success = 0;
+    // CHAMADA CORRIGIDA: Usa o array e o contador da struct
+    if (get_json_args(json, job->args, &job->argc)) {
+        return 1; // Sucesso genérico (pode ter 1 ou 10 argumentos)
     }
 
-    return success;
+    return 0;
 }
