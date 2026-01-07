@@ -20,7 +20,7 @@ Make sure you have the following installed:
 First, clone the repository and navigate to the project directory:
 
 ```bash
-git clone [https://github.com/david-jmc/midd4vc-c.git](https://github.com/david-jmc/midd4vc-c.git)
+git clone https://github.com/david-jmc/midd4vc-c.git
 cd midd4vc-c
 ```
 
@@ -76,7 +76,7 @@ David J. M. Cavalcanti
 
 Email: djmc@cin.ufpe.br
 
-LinkedIn: [linkedin.com/in/seu-perfil](https://www.linkedin.com/in/davidcavalcanti/)
+LinkedIn: [linkedin.com/in/davidcavalcanti](https://www.linkedin.com/in/davidcavalcanti/)
 
 ### 📄 License
 
