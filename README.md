@@ -1,8 +1,8 @@
 # Midd4VC-C: Middleware for Vehicular Cloud Computing
 
-**Midd4VC** is a middleware designed for **Vehicular Cloud Computing (VCC)** and **Intelligent Transport Systems (ITS)**. It provides a robust framework to manage computational tasks within a vehicular environment, enabling vehicles to act as service providers or consumers in a dynamic cloud architecture.
+**Midd4VC (Middeware _for_ Vehicular Cloud)** is a lightweight and extensible middleware designed for **Vehicular Cloud Computing (VCC)** and **Intelligent Transport Systems (ITS)**. It provides distribution and services to manage computational tasks within a vehicular cloud, abstracts the underlying communication, technology heterogeneity and execution details, and enabling vehicles to act as service providers or consumers to facilitate the creation and management of ITS in a dynamic cloud environment.
 
-This repository contains the C implementation of the middleware, optimized for performance and low-level system integration.
+This repository contains the _C_ implementation of the **Midd4VC** middleware. It currently uses a _de facto_ standard as the messaging protocol, namely MQTT (Message Queuing Telemetry Transport). It also ensures communication resilience, featuring reconnection, message handling, and parallel tasks execution. 
 
 ---
 
