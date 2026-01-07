@@ -16,32 +16,6 @@
 #define VEHICLE_TIMEOUT 60 
 #define MAX_LOAD 5         
 
-/* --- Estruturas --- */
-
-typedef struct {
-    char vehicle_id[64];
-    int active_jobs;
-    double latitude;
-    double longitude;
-    time_t last_seen;
-    int is_active;
-} vehicle_t;
-
-typedef struct {
-    char job_id[64];
-    char client_id[64];
-    char payload[512];
-    int completed;
-    int retries;
-    struct timespec sent_at_spec;
-    time_t sent_at;
-    int assigned;
-    char assigned_vehicle[64];
-    double req_lat;
-    double req_lon;
-    int in_use;
-} job_ctx_t;
-
 static vehicle_t vehicles[MAX_VEHICLES];
 static int vehicle_count = 0;
 static job_ctx_t jobs[MAX_JOBS];
