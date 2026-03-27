@@ -1,1 +1,7 @@
 build/
+evaluation/
+.venv/
+tests.txt
+trash/
+tests/
+mobicom_26/

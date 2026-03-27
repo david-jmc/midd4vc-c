@@ -1,6 +1,8 @@
 #define _POSIX_C_SOURCE 199309L
-#include "../../middleware/midd4vc_client.h"
-#include "../../middleware/midd4vc_protocol.h"
+#define _XOPEN_SOURCE 500
+#include "../../middleware/distribution/midd4vc_client.h"
+#include "../../middleware/distribution/midd4vc_protocol.h"
+#include "../../middleware/services/midd4vc_scheduler.h"
 
 #include <stdio.h>
 #include <unistd.h>
@@ -9,80 +11,104 @@
 #include <time.h>
 #include <math.h>
 
-#define MAX_VEHICLES 128
-#define MAX_JOBS     512
-#define JOB_TIMEOUT  5  
+#define MAX_VEHICLES 1000
+#define MAX_JOBS     1024
+#define JOB_TIMEOUT  2 //5  
 #define MAX_RETRIES  3
-#define VEHICLE_TIMEOUT 60 
-#define MAX_LOAD 5         
+#define VEHICLE_TIMEOUT 10 //120 
+#define MAX_LOAD 10 //5         
 
 static vehicle_t vehicles[MAX_VEHICLES];
 static int vehicle_count = 0;
 static job_ctx_t jobs[MAX_JOBS];
 
-/* --- Estratégias de Balanceamento --- */
+// experiments
+typedef struct {
+    char client_id[64];
+    int jobs_sent;
+    double rtt_sum;
+    int vehicle_usage[MAX_VEHICLES]; // Índice mapeado para o array 'vehicles'
+    int ready_to_log;
+} client_stats_t;
 
-typedef vehicle_t* (*balancing_strategy_fn)(double lat, double lon);
+static client_stats_t stats[100]; // Suporta até 100 clientes simultâneos
+static int stats_count = 0;
 
-static vehicle_t* strategy_proximity(double lat, double lon) {
-    vehicle_t *best = NULL;
-    double min_dist = 1e18;
-    for (int i = 0; i < vehicle_count; i++) {
-        if (!vehicles[i].is_active || vehicles[i].active_jobs >= MAX_LOAD) continue;
-        double d = sqrt(pow(lat - vehicles[i].latitude, 2) + pow(lon - vehicles[i].longitude, 2));
-        if (d < min_dist) { min_dist = d; best = &vehicles[i]; }
-    }
-    return (best) ? best : NULL;
+// Função para formatar a data atual (YYYY-MM-DD HH:MM:SS)
+void get_timestamp(char *buf, size_t len) {
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    strftime(buf, len, "%Y-%m-%d %H:%M:%S", t);
 }
 
-static vehicle_t* strategy_round_robin(double lat, double lon) {
-    static int rr_idx = 0;
+int header_impresso = 0;
+void imprimir_linha_csv(client_stats_t *cs) {
+    char ts[32];
+    get_timestamp(ts, sizeof(ts));
+
+    // Formato: timestamp,client_id,jobs_sent,avg_rtt,messages_per_vehicle
+    printf("EXPERIMENT_LOG,%s,%s,%d,%.4f,", 
+           ts, cs->client_id, cs->jobs_sent, (cs->rtt_sum / cs->jobs_sent));
+
+    // Monta a lista de veículos: veh337:1; veh175:1; ...
+    int first = 1;
     for (int i = 0; i < vehicle_count; i++) {
-        int idx = (rr_idx++) % vehicle_count;
-        if (vehicles[idx].is_active && vehicles[idx].active_jobs < MAX_LOAD) return &vehicles[idx];
+        if (cs->vehicle_usage[i] > 0) {
+            if (!first) printf("; ");
+            printf("%s:%d", vehicles[i].vehicle_id, cs->vehicle_usage[i]);
+            first = 0;
+        }
     }
-    return NULL;
+    printf("\n");
+    fflush(stdout); // Garante que a linha vá para o arquivo CSV imediatamente
 }
 
-static vehicle_t* strategy_least_loaded(double lat, double lon) {
-    vehicle_t *best = NULL;
-    for (int i = 0; i < vehicle_count; i++) {
-        if (!vehicles[i].is_active || vehicles[i].active_jobs >= MAX_LOAD) continue;
-        if (!best || vehicles[i].active_jobs < best->active_jobs) best = &vehicles[i];
-    }
-    return best;
-}
 
-static balancing_strategy_fn current_policy = strategy_round_robin;
+static scheduler_ctx_t sched_ctx = {
+    .rr_idx = 0,
+    .prox_rr_idx = 0,
+    .max_load = MAX_LOAD,
+    //.reach_distance = 500.0
+    .proximity_threshold = 500
+};
+
+static balancing_strategy_fn current_policy = strategy_least_loaded;
 
 /* --- Helpers --- */
 
 static vehicle_t *get_vehicle(const char *id) {
-    for (int i = 0; i < vehicle_count; i++)
-        if (strcmp(vehicles[i].vehicle_id, id) == 0) return &vehicles[i];
+    for (int i = 0; i < vehicle_count; i++) {
+        if (strcmp(vehicles[i].vehicle_id, id) == 0) {
+            return &vehicles[i];
+        }
+    }
     
-    if (vehicle_count >= MAX_VEHICLES) return NULL;
-    vehicle_t *v = &vehicles[vehicle_count++];
-    memset(v, 0, sizeof(vehicle_t));
-    strcpy(v->vehicle_id, id);
-    v->is_active = 1;
-    return v;
+   if (vehicle_count < MAX_VEHICLES) {
+        vehicle_t *v = &vehicles[vehicle_count++];
+        memset(v, 0, sizeof(vehicle_t));
+        strncpy(v->vehicle_id, id, sizeof(v->vehicle_id) - 1);
+        v->is_active = 1;
+        //v->max_load = 5;
+        v->last_seen = time(NULL); // Inicializa com o tempo atual
+        return v;
+    }
+    return NULL;
 }
 
 /* --- Handlers --- */
 
 static void assign_job(midd4vc_client_t *c, job_ctx_t *j) {
-    if (!current_policy) current_policy = strategy_proximity;
+    if (!current_policy) current_policy = strategy_least_loaded;
     
-    vehicle_t *v = current_policy(j->req_lat, j->req_lon);
+    vehicle_t *v = current_policy(vehicles, vehicle_count,j->req_lat, j->req_lon, &sched_ctx);
     
     if (!v) {
-        printf("[SERVER] Cloud Error: No nodes available for job %s\n", j->job_id);
+        printf("[SERVER] Cloud Error: No nodes available for task %s\n", j->job_id);
         return;
     }
 
     v->active_jobs++;
-    strcpy(j->assigned_vehicle, v->vehicle_id);
+    strncpy(j->assigned_vehicle, v->vehicle_id, sizeof(j->assigned_vehicle) - 1);
     j->assigned = 1;
     j->sent_at = time(NULL);
     clock_gettime(CLOCK_MONOTONIC, &j->sent_at_spec);
@@ -121,6 +147,49 @@ static void on_job_submit(midd4vc_client_t *c, const char *topic, const char *pa
     }
     if (slot == -1) return;
 
+    // 1. Usa o Codec para extrair tudo de uma vez
+    midd4vc_job_t parsed;
+    if (!midd4vc_parse_job(payload, &parsed)) {
+        printf("[SERVER] Erro: Payload de Job inválido.\n");
+        return;
+    }
+
+    job_ctx_t *j = &jobs[slot];
+    memset(j, 0, sizeof(job_ctx_t));
+    j->in_use = 1;
+    
+    // 2. Copia os dados parseados para o contexto do servidor
+    strncpy(j->job_id, parsed.job_id, sizeof(j->job_id) - 1);
+    strncpy(j->client_id, parsed.client_id, sizeof(j->client_id) - 1);
+    
+    // Se o client_id não estava no payload, tenta pegar do tópico (fallback)
+    if (strlen(j->client_id) == 0) {
+        sscanf(topic, "vc/client/%63[^/]", j->client_id);
+    }
+
+    j->req_lat = parsed.lat;
+    j->req_lon = parsed.lon;
+    strncpy(j->payload, payload, sizeof(j->payload) - 1);
+
+    // 3. Log inteligente baseado na presença de GPS
+    if (j->req_lat == GPS_INVALID) {
+        printf("[SERVER] Novo Job %s (Agnóstico a posição). Selecionando...\n", j->job_id);
+    } else {
+        printf("[SERVER] Novo Job %s em (%.4f, %.4f). Selecionando...\n", 
+               j->job_id, j->req_lat, j->req_lon);
+    }
+
+    assign_job(c, j);
+}
+
+/*
+static void on_job_submit(midd4vc_client_t *c, const char *topic, const char *payload) {
+    int slot = -1;
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (!jobs[i].in_use || jobs[i].completed) { slot = i; break; }
+    }
+    if (slot == -1) return;
+
     job_ctx_t *j = &jobs[slot];
     memset(j, 0, sizeof(job_ctx_t));
     j->in_use = 1;
@@ -145,6 +214,7 @@ static void on_job_submit(midd4vc_client_t *c, const char *topic, const char *pa
 
     assign_job(c, j);
 }
+    */
 
 static void on_job_result(midd4vc_client_t *c, const char *topic, const char *payload) {
     char job_id[64] = {0}, target_client[64] = {0};
@@ -163,8 +233,8 @@ static void on_job_result(midd4vc_client_t *c, const char *topic, const char *pa
             double elapsed = (now.tv_sec - jobs[i].sent_at_spec.tv_sec) + 
                              (now.tv_nsec - jobs[i].sent_at_spec.tv_nsec) / 1e9;
 
-            vehicle_t *v = get_vehicle(jobs[i].assigned_vehicle);
-            if (v && v->active_jobs > 0) v->active_jobs--;
+            //vehicle_t *v = get_vehicle(jobs[i].assigned_vehicle);
+            //if (v && v->active_jobs > 0) v->active_jobs--;
 
             char final_json[512];
             snprintf(final_json, sizeof(final_json),
@@ -174,6 +244,41 @@ static void on_job_result(midd4vc_client_t *c, const char *topic, const char *pa
             char client_topic[128];
             snprintf(client_topic, sizeof(client_topic), "vc/client/%s/job/result", target_client);
             midd4vc_publish(c, client_topic, final_json);
+
+            // --- LÓGICA DE ATUALIZAÇÃO DE STATS ---
+            client_stats_t *cs = NULL;
+            // Busca o cliente na tabela de estatísticas
+            for (int s = 0; s < stats_count; s++) {
+                if (strcmp(stats[s].client_id, target_client) == 0) {
+                    cs = &stats[s];
+                    break;
+                }
+            }
+            // Se for um novo cliente, registra ele
+            if (!cs && stats_count < 100) {
+                cs = &stats[stats_count++];
+                memset(cs, 0, sizeof(client_stats_t));
+                strcpy(cs->client_id, target_client);
+            }
+
+            if (cs) {
+                cs->jobs_sent++;
+                cs->rtt_sum += elapsed;
+                
+                // Identifica qual veículo processou e incrementa o contador dele
+                for (int v = 0; v < vehicle_count; v++) {
+                    if (strcmp(vehicles[v].vehicle_id, jobs[i].assigned_vehicle) == 0) {
+                        cs->vehicle_usage[v]++;
+                        if (vehicles[v].active_jobs > 0) vehicles[v].active_jobs--;
+                        break;
+                    }
+                }
+
+                // Quando chegar em 10 jobs, gera a linha no CSV
+                if (cs->jobs_sent % 10 == 0) {
+                    imprimir_linha_csv(cs);
+                }
+            }
             
             printf("[PERF] Job %s DONE in %.4fs (Node: %s)\n", job_id, elapsed, jobs[i].assigned_vehicle);
             return;
@@ -184,27 +289,60 @@ static void on_job_result(midd4vc_client_t *c, const char *topic, const char *pa
 static void on_config_policy(midd4vc_client_t *c, const char *topic, const char *payload) {
     if (strstr(payload, "RR")) current_policy = strategy_round_robin;
     else if (strstr(payload, "LOAD")) current_policy = strategy_least_loaded;
+    else if (strstr(payload, "PROXIMITY")) current_policy = strategy_proximity_rr; // Ajustado
+    else if (strstr(payload, "HYBRID")) current_policy = strategy_hybrid_pro;    // Adicionado
+    printf("[SERVER] Policy Updated\n");
+}
+
+/*
+static void on_config_policy(midd4vc_client_t *c, const char *topic, const char *payload) {
+    if (strstr(payload, "RR")) current_policy = strategy_round_robin;
+    else if (strstr(payload, "LOAD")) current_policy = strategy_least_loaded;
     else if (strstr(payload, "PROXIMITY")) current_policy = strategy_proximity;
     printf("[SERVER] Policy Updated\n");
 }
+*/
 
 static void on_vehicle_status_change(midd4vc_client_t *c, const char *topic, const char *payload) {
     char v_id[64];
     sscanf(topic, "vc/vehicle/%63[^/]/status", v_id);
 
     vehicle_t *v = get_vehicle(v_id);
+
     if (v && strstr(payload, "offline_lwt")) {
         v->is_active = 0;
+        v->active_jobs = 0; // new
+        v->last_seen = time(NULL);
         printf("[SERVER] LWT DETECTADO: Veículo %s desconectou abruptamente!\n", v_id);
     } else if (v && strstr(payload, "online")) {
         v->is_active = 1;
+        v->last_seen = time(NULL);
         printf("[SERVER] Veículo %s está Online via LWT\n", v_id);
     }
 }
 
 static void maintenance_loop(midd4vc_client_t *c) {
     time_t now = time(NULL);
+
+    // 1. Monitoramento de Inatividade dos Veículos (Purge)
+    int active_now = 0;
+    for (int i = 0; i < vehicle_count; i++) {
+        if (vehicles[i].is_active) {
+            long diff = (long)(now - vehicles[i].last_seen);
+            
+            // Se o veículo não atualiza posição/status há mais de VEHICLE_TIMEOUT (60s)
+            if (diff > VEHICLE_TIMEOUT) {
+                vehicles[i].is_active = 0;
+                // Importante: zera os jobs ativos pois o nó sumiu
+                vehicles[i].active_jobs = 0; 
+                printf("[SERVER] Vehicle %s OFFLINE (Timeout: %lds)\n", vehicles[i].vehicle_id, diff);
+            } else {
+                active_now++;
+            }
+        }
+    } 
     
+    // 2. Monitoramento de Timeouts de Jobs (Retry Logic)
     for (int i = 0; i < MAX_JOBS; i++) {
         job_ctx_t *j = &jobs[i];
         if (j->in_use && !j->completed && j->assigned && (now - j->sent_at >= JOB_TIMEOUT)) {
@@ -214,46 +352,19 @@ static void maintenance_loop(midd4vc_client_t *c) {
             if (j->retries < MAX_RETRIES) {
                 j->retries++; 
                 j->assigned = 0;
-                printf("[SERVER] Retry %d for Job %s\n", j->retries, j->job_id);
+                printf("[SERVER] Retry %d for Task %s\n", j->retries, j->job_id);
                 assign_job(c, j);
             } else {
                 j->completed = 1;
-                printf("[SERVER] Job %s FAILED\n", j->job_id);
+                j->in_use = 0;
+                printf("[SERVER] Task %s FAILED\n", j->job_id);
             }
         }
     }
 }
-
-/*
-static void maintenance_loop(midd4vc_client_t *c) {
-    time_t now = time(NULL);
-    for (int i = 0; i < vehicle_count; i++) {
-        printf("DEBUG: Node %s last seen %ld seconds ago\n", vehicles[i].vehicle_id, now - vehicles[i].last_seen);
-        if (vehicles[i].is_active && (now - vehicles[i].last_seen > VEHICLE_TIMEOUT)) {
-            vehicles[i].is_active = 0;
-            printf("[SERVER] Vehicle %s OFFLINE (Mobility)\n", vehicles[i].vehicle_id);
-        }
-    }
-    for (int i = 0; i < MAX_JOBS; i++) {
-        job_ctx_t *j = &jobs[i];
-        if (j->in_use && !j->completed && j->assigned && (now - j->sent_at >= JOB_TIMEOUT)) {
-            vehicle_t *v = get_vehicle(j->assigned_vehicle);
-            if (v && v->active_jobs > 0) v->active_jobs--;
-            
-            if (j->retries < MAX_RETRIES) {
-                j->retries++; j->assigned = 0;
-                printf("[SERVER] Retry %d for Job %s\n", j->retries, j->job_id);
-                assign_job(c, j);
-            } else {
-                j->completed = 1;
-                printf("[SERVER] Job %s FAILED\n", j->job_id);
-            }
-        }
-    }
-}
-*/
 
 int main(void) {
+    srand(time(NULL));
     midd4vc_client_t *srv = midd4vc_create("server_cloud_ctrl", ROLE_DASHBOARD);
     midd4vc_start(srv);
 
@@ -267,6 +378,7 @@ int main(void) {
 
     while (1) {
         maintenance_loop(srv);
-        sleep(1);
+        //sleep(1);
+        usleep(100000);
     }
 }

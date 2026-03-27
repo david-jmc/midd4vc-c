@@ -13,6 +13,10 @@ typedef struct {
     int args[16];
     size_t argc;
     char client_id[64];
+    int result;
+    char status[16];
+    double lat;
+    double lon;
 } midd4vc_job_t;
 
 /* ---- Job status ---- */
@@ -31,6 +35,7 @@ typedef struct {
     double longitude;
     time_t last_seen;
     int is_active;
+    long total_processed;
 } vehicle_t;
 
 typedef struct {
@@ -94,5 +99,7 @@ typedef struct {
 #define EVENT_RSU_UP         "rsu/up"
 #define EVENT_JOB_ASSIGNED   "job/assigned"
 #define EVENT_JOB_FAILED     "job/failed"
+
+#define GPS_INVALID -999.0
 
 #endif

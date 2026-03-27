@@ -20,4 +20,8 @@ void midd4vc_build_job_result(
     int result
 );
 
+int midd4vc_encode_job(char *dest, size_t dest_sz, const char *job_id, const char *service, 
+                       const char *function, const char *client_id, 
+                       double lat, double lon, const int *args, int argc);
+
 #endif

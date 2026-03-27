@@ -1,4 +1,4 @@
-#include "../../middleware/midd4vc_client.h"
+#include "../../middleware/distribution/midd4vc_client.h"
 #include "job_catalog.h"
 #include <stdio.h>
 #include <stdlib.h>

@@ -67,28 +67,19 @@ int mqtt_connect(const char *host, int port, const char *lwt_topic, const char *
     if (lwt_topic && lwt_message) {
         will_opts.topicName = lwt_topic;
         will_opts.message = lwt_message;
-        will_opts.retained = 1; // Importante para o servidor saber mesmo se o evento passou
+        will_opts.retained = 0; 
         will_opts.qos = 1;
         conn_opts.will = &will_opts;
     }
 
     conn_opts.keepAliveInterval = 10;
     conn_opts.cleansession = 1;
-    if (MQTTClient_connect(client, &conn_opts) != MQTTCLIENT_SUCCESS) {
-        printf("[MQTT] Failure to connect\n");
+    int rc = MQTTClient_connect(client, &conn_opts);
+    if (rc != MQTTCLIENT_SUCCESS) {
+        printf("[MQTT] Failure to connect, return code %d\n", rc);
     }
+    return rc;
 }
-
-/** 
-void mqtt_connect(const char *host, int port) {
-    MQTTClient_connectOptions opts = MQTTClient_connectOptions_initializer;
-    opts.keepAliveInterval = 20;
-    opts.cleansession = 1;
-    if (MQTTClient_connect(client, &opts) != MQTTCLIENT_SUCCESS) {
-        printf("[MQTT] Failure to connect\n");
-    }
-}
-*/
 
 void mqtt_subscribe(const char *topic, mqtt_msg_cb_t cb, void *userdata) {
     // Adiciona à tabela de subscrições interna

@@ -1,7 +1,8 @@
 #include "midd4vc_client.h"
 #include "midd4vc_protocol.h"
 #include "midd4vc_job_codec.h"
-#include "../platform/posix/mqtt_adapter.h"
+#include "../infrastructure/mqtt_adapter.h"
+#include "../specifics/job_catalog.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,7 +11,7 @@
 /* Forward declaration */
 static void handle_job_result_raw(midd4vc_client_t *c, const char *payload);
 
-#define MAX_SUBSCRIPTIONS 100
+#define MAX_SUBSCRIPTIONS 1000
 
 typedef struct {
     char topic[128];
@@ -22,6 +23,10 @@ struct midd4vc_client {
     midd4vc_role_t role;
     midd4vc_state_t state;
 
+    double lat;
+    double lon;
+    int battery_level;
+
     midd4vc_job_cb_t job_cb;
     midd4vc_event_cb_t event_cb;
     midd4vc_job_result_cb_t job_result_cb;
@@ -29,6 +34,26 @@ struct midd4vc_client {
     midd4vc_subscription_t subs[MAX_SUBSCRIPTIONS];
     int sub_count;
 };
+
+/* Encapsulamento de Getters/Setters para a aplicação */
+void midd4vc_set_position(midd4vc_client_t *c, double lat, double lon) {
+    if (c) { c->lat = lat; c->lon = lon; }
+}
+
+double midd4vc_get_lat(midd4vc_client_t *c) { return c ? c->lat : 0.0; }
+double midd4vc_get_lon(midd4vc_client_t *c) { return c ? c->lon : 0.0; }
+
+/* Refatoração do Registro Automático */
+void midd4vc_register_auto(midd4vc_client_t *c) {
+    if (!c || c->state != MIDD4VC_RUNNING) return;
+
+    char payload[128];
+    // Aqui o aluno de mestrado poderá atuar no futuro, 
+    // alterando como esse JSON é gerado (Data Management)
+    snprintf(payload, sizeof(payload), "{\"latitude\":%.6f,\"longitude\":%.6f}", c->lat, c->lon);
+    
+    midd4vc_register(c, payload);
+}
 
 /* ---------- util ---------- */
 
@@ -54,31 +79,31 @@ static void mqtt_message_router(void *userdata, const char *topic, const char *p
     midd4vc_client_t *c = userdata;
     if (!c || c->state != MIDD4VC_RUNNING) return;
 
-    /* 1. Subscrições customizadas (callbacks diretos) */
+    /* 1. Verifying custom subscritions via API (direct callbacks) */
     for (int i = 0; i < c->sub_count; i++) {
         if (mqtt_topic_match(c->subs[i].topic, topic)) {
             c->subs[i].cb(c, topic, payload);
         }
     }
 
-    /* 2. Atribuição de Jobs (Papel de Veículo/RSU) */
+    /* 2. Tasks Atribution (Vehicle/RSU) */
     if (strstr(topic, "/job/assign")) {
         midd4vc_job_t job;
         if (midd4vc_parse_job(payload, &job)) {
             if (c->job_cb) c->job_cb(c, &job);
         } else {
-            printf("[Midd4VC] Erro: Falha ao processar JSON do job atribuído\n");
+            printf("[Midd4VC] Erro: Failed to parser the Task\n");
         }
         return;
     }
 
-    /* 3. Resultado de Jobs (Papel de Cliente) */
+    /* 3. Tasks Results (Clients) */
     if (strstr(topic, "/job/result")) {
         handle_job_result_raw(c, payload);
         return;
     }
 
-    /* 4. Eventos do Sistema */
+    /* 4. Events */
     if (strstr(topic, "vc/event/")) {
         if (c->event_cb) c->event_cb(c, topic, payload);
         return;
@@ -90,7 +115,12 @@ static void mqtt_message_router(void *userdata, const char *topic, const char *p
 midd4vc_client_t *midd4vc_create(const char *client_id, midd4vc_role_t role) {
     midd4vc_client_t *c = calloc(1, sizeof(*c));
     if (!c) return NULL;
-    strncpy(c->client_id, client_id, sizeof(c->client_id) - 1);
+
+    if (client_id == NULL || strlen(client_id) == 0) {
+        snprintf(c->client_id, sizeof(c->client_id), "node_%04X", rand() % 0xFFFF); 
+    } else {        
+        strncpy(c->client_id, client_id, sizeof(c->client_id) - 1);
+    }
     c->role = role;
     c->state = MIDD4VC_CREATED;
     return c;
@@ -156,44 +186,12 @@ void midd4vc_start(midd4vc_client_t *c) {
     printf("[Midd4VC] Cliente '%s' iniciado (Role: %d) com LWT ativado\n", c->client_id, c->role);
 }
 
-/*
-void midd4vc_start(midd4vc_client_t *c) {
-    if (!c) return;
-
-    mqtt_init(c->client_id);
-    mqtt_connect("localhost", 1883);
-
-    char topic[128];
-
-    // Se for um nó de processamento (Veículo), ouve o que o servidor envia
-    if (c->role == ROLE_VEHICLE || c->role == ROLE_RSU) {
-        snprintf(topic, sizeof(topic), TOPIC_JOB_ASSIGN, c->client_id);
-        mqtt_subscribe(topic, mqtt_message_router, c);
-        
-        // new
-        midd4vc_register(c, "{\"status\":\"online\"}");
-    }
-
-    // SE FOR UM CLIENTE: Ouve os resultados vindos da nuvem (CORREÇÃO CRÍTICA)
-    if (c->role == ROLE_CLIENT) {
-        snprintf(topic, sizeof(topic), TOPIC_JOB_RESULT, c->client_id);
-        mqtt_subscribe(topic, mqtt_message_router, c);
-    }
-
-    // Todos ouvem eventos globais
-    mqtt_subscribe("vc/event/#", mqtt_message_router, c);
-
-    c->state = MIDD4VC_RUNNING;
-    printf("[Midd4VC] Cliente '%s' iniciado (Role: %d)\n", c->client_id, c->role);
-}
-
 void midd4vc_stop(midd4vc_client_t *c) {
-    if (c) {
+    if (c && c->state == MIDD4VC_RUNNING) {
         mqtt_disconnect();
         c->state = MIDD4VC_STOPPED;
     }
 }
-    */
 
 /* ---------- Operações de Mensagens ---------- */
 
@@ -218,6 +216,8 @@ void midd4vc_submit_job(midd4vc_client_t *c, const char *job_id, const char *ser
     if (!c || c->state != MIDD4VC_RUNNING) return;
 
     char payload[512];
+
+    /*
     char args_buf[256] = "[";
     
     for (int i = 0; i < argc; i++) {
@@ -230,6 +230,11 @@ void midd4vc_submit_job(midd4vc_client_t *c, const char *job_id, const char *ser
     snprintf(payload, sizeof(payload),
         "{\"job_id\":\"%s\",\"service\":\"%s\",\"function\":\"%s\",\"args\":%s,\"client_id\":\"%s\",\"lat\":%.6f,\"lon\":%.6f}",
         job_id, service, function, args_buf, c->client_id, lat, lon);
+    
+    */
+
+    midd4vc_encode_job(payload, sizeof(payload), job_id, service, function, 
+                       c->client_id, lat, lon, args, argc);
 
     char topic[128];
     snprintf(topic, sizeof(topic), TOPIC_JOB_SUBMIT, c->client_id);
@@ -251,8 +256,22 @@ void midd4vc_register(midd4vc_client_t *c, const char *json_payload) {
     mqtt_publish(topic, json_payload);
 }
 
+static void handle_job_result_raw(midd4vc_client_t *c, const char *payload) {
+    if (!c || !payload || !c->job_result_cb) return;
+
+    midd4vc_job_t job;
+    if (midd4vc_parse_job(payload, &job)) {
+        // Converte a string de status do codec para o enum do handler
+        midd4vc_job_status_t status = (strcmp(job.status, JOB_STATUS_DONE) == 0) ? JOB_DONE : JOB_ERROR;
+        
+        // Dispara o callback com os dados prontos
+        c->job_result_cb(job.job_id, status, job.result);
+    }
+}
+
 /* ---------- Tratamento de Resultados ---------- */
 
+/*
 static void handle_job_result_raw(midd4vc_client_t *c, const char *payload) {
     if (!c || !payload || !c->job_result_cb) return;
 
@@ -271,6 +290,7 @@ static void handle_job_result_raw(midd4vc_client_t *c, const char *payload) {
     // Chama o callback da aplicação (client_app)
     c->job_result_cb(job_id, status, result);
 }
+*/
 
 void midd4vc_send_job_success(midd4vc_client_t *c, const char *client_id, const char *job_id, int result) {
     char payload[512];
@@ -285,4 +305,38 @@ void midd4vc_send_job_success(midd4vc_client_t *c, const char *client_id, const 
 
 const char *midd4vc_get_id(midd4vc_client_t *c) {
     return c ? c->client_id : NULL;
+}
+
+/* ---------- Execução Dinâmica de Jobs (Cloud-Native Logic) ---------- */
+
+int midd4vc_execute_job_internal(midd4vc_client_t *c, const midd4vc_job_t *job) {
+    if (!c || !job) return -1;
+
+    // 1. O Middleware consulta o catálogo interno
+    // Isso resolve o problema de o vehicle.c precisar do .h
+    job_fn_t worker = job_catalog_lookup(job->service, job->function);
+
+    if (worker) {
+        // Sucesso: Função encontrada (estática ou .so carregado)
+        return worker(job->args, job->argc);
+    }
+
+    // 2. FALHA (Cache Miss): O código não existe no veículo
+    printf("[Midd4VC] SERVIÇO NÃO ENCONTRADO: %s.%s. Iniciando busca na nuvem...\n", 
+           job->service, job->function);
+
+    // 3. Solicitação via MQTT para o Servidor (Dynamic Pull)
+    char pull_topic[128];
+    char pull_payload[256];
+    
+    // Tópico para o servidor saber quem está pedindo o que
+    snprintf(pull_topic, sizeof(pull_topic), "vc/vehicle/%s/service/request", c->client_id);
+    snprintf(pull_payload, sizeof(pull_payload), 
+             "{\"service\":\"%s\",\"function\":\"%s\",\"node_id\":\"%s\"}", 
+             job->service, job->function, c->client_id);
+    
+    midd4vc_publish(c, pull_topic, pull_payload);
+
+    // Retornamos um código especial (ex: -404) para o vehicle.c saber que deve aguardar
+    return -404; 
 }
